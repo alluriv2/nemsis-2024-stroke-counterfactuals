@@ -1,0 +1,422 @@
+---
+title: "NEMSIS_2024_Stroke_Stat_Analysis"
+author: "Vaibhav Alluri"
+date: "2026-02-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+# ================================
+# 0) Libraries
+# ================================
+library(readr)
+library(dplyr)
+library(tidyr)
+library(caret)
+library(Hmisc)     # rcorr
+library(corrplot)
+library(here)
+library(arrow)
+library(dplyr)
+
+df_original <- read_parquet("../Data_Files/stroke_master_final_cleaned.parquet")
+
+
+dim(df_original)
+glimpse(df_original)
+
+```
+
+
+```{r}
+
+
+cols_to_drop <- c(
+  "PcrKey_1",
+  "USCensusRegion",
+  "USCensusDivision",
+  "NasemsoRegion",
+  "Urbanicity",
+  "eSituation_01",
+  "eSituation_18",
+  "eScene_09",
+  "ageinyear",
+  "min_eVitals_18",
+  "max_eVitals_18"
+)
+
+df_stat <- df_original %>%
+  select(-any_of(cols_to_drop))
+
+```
+
+
+```{r}
+setdiff(cols_to_drop, names(df_stat))   # should return all of them
+dim(df_original)
+dim(df_stat)
+
+```
+
+
+```{r}
+
+cols_to_drop <- c(
+  "PcrKey_1",
+  "USCensusRegion",
+  "USCensusDivision",
+  "NasemsoRegion",
+  "Urbanicity",
+  "eSituation_01",
+  "eSituation_18",
+  "eScene_09",
+  "ageinyear",
+  "min_eVitals_18",
+  "max_eVitals_18",
+  "PcrMedicationKey_ID",
+  "PcrVitalKey_ID",
+  "PcrProcedureKey_ID"
+)
+
+num_feat <- c(
+  "EMSDispatchCenterTimeSec",
+  "EMSChuteTimeMin",
+  "EMSSystemResponseTimeMin",
+  "EMSSceneResponseTimeMin",
+  "EMSSceneTimeMin",
+  "EMSSceneToPatientTimeMin",
+  "EMSTransportTimeMin",
+  "EMSTotalCallTimeMin",
+  "ePatient_15",
+  "avg_eVitals_06",
+  "avg_eVitals_10",
+  "avg_eVitals_12",
+  "avg_eVitals_14",
+  "avg_eVitals_27",
+  "avg_eVitals_18"
+)
+
+cat_feat <- setdiff(
+  names(df_original),
+  c(cols_to_drop, num_feat)
+)
+
+length(cat_feat)
+head(cat_feat)
+```
+
+
+```{r}
+
+length(cols_to_drop)
+length(num_feat)
+length(cat_feat)
+
+# Ensure no overlap
+intersect(num_feat, cat_feat)
+intersect(cols_to_drop, cat_feat)
+intersect(num_feat, cols_to_drop)
+
+```
+
+```{r}
+
+na_summary <- data.frame(
+  column = names(df_original),
+  n_na = sapply(df_original, function(x) sum(is.na(x))),
+  pct_na = sapply(df_original, function(x) mean(is.na(x))) * 100
+)
+
+# sort by highest NA %
+na_summary <- na_summary %>% arrange(desc(pct_na))
+
+na_summary
+
+```
+
+```{r}
+
+# Features having less than threshold% nulls
+
+null_threshold = 35
+
+keep_cols <- na_summary %>%
+  filter(pct_na < null_threshold) %>%
+  pull(column)
+
+# df of cols having less than threshold% nulls
+df_less_than_null_threshold <- df_original %>%
+  select(all_of(keep_cols))
+```
+
+
+```{r}
+dim(df_original)
+dim(df_less_than_null_threshold)
+```
+
+
+```{r}
+
+```
+
+```{r}
+
+# ================================
+# E) Drop rows with any NA (complete-case analysis)
+# ================================
+df_no_na <- df_less_than_null_threshold %>% drop_na()
+cat("Length after dropping rows with at least one NA:", nrow(df_no_na), "\n")
+
+# ================================
+# E.1) Convert data types AFTER complete-case filtering
+# ================================
+
+# Convert numeric features (currently character) to numeric
+df_no_na <- df_no_na %>%
+  mutate(across(all_of(intersect(num_feat, names(df_no_na))),
+                ~ suppressWarnings(as.numeric(.x))))
+
+# Convert categorical features to factors
+df_no_na <- df_no_na %>%
+  mutate(across(all_of(intersect(cat_feat, names(df_no_na))),
+                as.factor))
+
+# ================================
+# F) Create binary target
+# ================================
+df_no_na <- df_no_na %>%
+  mutate(scene_time_binary = if_else(EMSSceneTimeMin <= 10, 0L, 1L))
+
+# ================================
+# G) Build single working dataset (NO train/test split)
+#    - Remove leakage target + identifier
+#    - Keep target as factor {0,1}
+# ================================
+work_df <- df_no_na %>%
+  select(-EMSSceneTimeMin, -PcrKey) %>%
+  mutate(scene_time_binary = factor(scene_time_binary, levels = c(0, 1)))
+
+target_col <- "scene_time_binary"
+alpha <- 0.05
+cor_cutoff <- 0.8
+
+# Ensure categorical predictors are factors for chi-square
+work_df <- work_df %>%
+  mutate(across(all_of(intersect(cat_feat, names(work_df))), as.factor))
+
+
+```
+
+```{r}
+
+# ================================
+# TRACK REMOVED FEATURES BY TECHNIQUE
+# ================================
+removed <- list(
+  correlation = character(0),
+  nzv = character(0),
+  chi_square = character(0),
+  kruskal = character(0)
+)
+
+drop_cols <- function(df, cols_to_drop) {
+  cols_to_drop <- intersect(cols_to_drop, colnames(df))
+  df <- df[, !(colnames(df) %in% cols_to_drop), drop = FALSE]
+  list(df = df, dropped = cols_to_drop)
+}
+
+```
+
+```{r}
+
+# ================================
+# 1) CORRELATION FILTER (numeric only)
+# ================================
+existing_num <- intersect(num_feat, colnames(work_df))
+existing_num <- setdiff(existing_num, target_col)
+
+reduced_num_cols <- existing_num
+
+if (length(existing_num) >= 2) {
+  cor_obj <- rcorr(as.matrix(work_df[, existing_num, drop = FALSE]), type = "spearman")
+  cor_r <- cor_obj$r
+  cor_p <- cor_obj$P
+  diag(cor_p) <- 0
+
+  # Optional: save significance-only heatmap
+  #custom_palette <- colorRampPalette(c("#6D9EC1", "white", "#E46767"))(200)
+  #png("correlation_heatmap_sig_only_largefont.png", width = 1000, height = 1000)
+  #corrplot(cor_r,
+           # method = "color",p.mat = cor_p,sig.level = alpha,insig = "blank",col = custom_palette,number.cex = 1.1,tl.cex = # 1.2,cl.cex = 1.1,tl.col = "black")
+  #dev.off()
+
+  drop_cor_idx <- findCorrelation(cor_r, cutoff = cor_cutoff)
+
+  if (length(drop_cor_idx) > 0) {
+    removed$correlation <- existing_num[drop_cor_idx]
+    reduced_num_cols <- setdiff(existing_num, removed$correlation)
+
+    out <- drop_cols(work_df, removed$correlation)
+    work_df <- out$df
+  }
+}
+
+cat("After correlation step, cols:", ncol(work_df), "\n")
+
+```
+
+```{r}
+
+# ================================
+# 2) NEAR-ZERO VARIANCE (predictors only)
+# ================================
+predictor_cols <- setdiff(colnames(work_df), target_col)
+
+nzv <- nearZeroVar(work_df[, predictor_cols, drop = FALSE], saveMetrics = TRUE)
+removed$nzv <- rownames(nzv[nzv$nzv == TRUE, , drop = FALSE])
+
+if (length(removed$nzv) > 0) {
+  out <- drop_cols(work_df, removed$nzv)
+  work_df <- out$df
+}
+
+cat("After NZV step, cols:", ncol(work_df), "\n")
+
+```
+
+```{r}
+
+# ================================
+# 3) CHI-SQUARE (categorical ~ target) with BH correction
+#    - Uses simulated p-value when expected counts are small
+# ================================
+existing_cats <- setdiff(intersect(cat_feat, colnames(work_df)), target_col)
+
+chi_p <- sapply(existing_cats, function(col) {
+  tbl <- table(work_df[[col]], work_df[[target_col]])
+  if (min(dim(tbl)) <= 1) return(NA_real_)
+
+  test <- suppressWarnings(chisq.test(tbl))
+  if (any(test$expected < 5)) {
+    suppressWarnings(chisq.test(tbl, simulate.p.value = TRUE, B = 2000)$p.value)
+  } else {
+    test$p.value
+  }
+})
+
+chi_p_adj <- p.adjust(chi_p, method = "BH")
+
+significant_cat_vars <- names(chi_p_adj)[!is.na(chi_p_adj) & chi_p_adj < alpha]
+removed$chi_square <- setdiff(existing_cats, significant_cat_vars)
+
+if (length(removed$chi_square) > 0) {
+  out <- drop_cols(work_df, removed$chi_square)
+  work_df <- out$df
+}
+
+cat("After chi-square step, cols:", ncol(work_df), "\n")
+
+
+```
+
+```{r}
+
+# ================================
+# 4) KRUSKAL-WALLIS (numeric ~ target) with BH correction
+# ================================
+num_for_kw <- setdiff(intersect(reduced_num_cols, colnames(work_df)), target_col)
+
+kw_p <- sapply(num_for_kw, function(col) {
+  tryCatch(kruskal.test(work_df[[col]] ~ work_df[[target_col]])$p.value,
+           error = function(e) NA_real_)
+})
+
+kw_p_adj <- p.adjust(kw_p, method = "BH")
+
+significant_num_vars <- names(kw_p_adj)[!is.na(kw_p_adj) & kw_p_adj < alpha]
+removed$kruskal <- setdiff(num_for_kw, significant_num_vars)
+
+if (length(removed$kruskal) > 0) {
+  out <- drop_cols(work_df, removed$kruskal)
+  work_df <- out$df
+}
+
+cat("After kruskal step, cols:", ncol(work_df), "\n")
+
+```
+
+```{r}
+
+# ================================
+# 5) FINAL FEATURE SET + REPORTS
+# ================================
+final_vars <- c(significant_cat_vars, significant_num_vars)
+final_vars <- final_vars[!is.na(final_vars)]
+final_vars <- intersect(final_vars, colnames(work_df))  # safety
+
+cat("\nFinal features selected for modeling:\n")
+print(final_vars)
+
+cat("\nFinal dataset shape (selected + target):\n")
+print(dim(work_df[, c(final_vars, target_col), drop = FALSE]))
+
+cat("\n================ REMOVED FEATURES BY TECHNIQUE ================\n")
+cat("\nCorrelation removed:\n"); print(removed$correlation)
+cat("\nNZV removed:\n"); print(removed$nzv)
+cat("\nChi-square removed:\n"); print(removed$chi_square)
+cat("\nKruskal-Wallis removed:\n"); print(removed$kruskal)
+
+removed_all <- sort(unique(unlist(removed)))
+cat("\nTOTAL UNIQUE REMOVED FEATURES:\n")
+print(removed_all)
+
+
+```
+
+```{r}
+
+# ================================
+# Combine all removed columns
+# ================================
+# ================================
+# Columns removed due to NA threshold
+# ================================
+removed_na <- setdiff(names(df_original), keep_cols)
+
+# ================================
+# Combine ALL removed columns
+# ================================
+removed_all <- unique(c(
+  cols_to_drop,      # manual / design drops
+  removed_na,        # high-missingness drops
+  unlist(removed)    # correlation / nzv / stats filters
+))
+
+length(removed_all)
+
+# ================================
+# Persist for Python pipeline
+# ================================
+write.csv(
+  data.frame(column = removed_all),
+  "../Stat_Outputs/removed_features.csv",
+  row.names = FALSE
+)
+
+drop_df <- data.frame(column_name = cols_to_drop)
+write.csv(drop_df,
+          "../Stat_Outputs/cols_to_drop.csv",
+          row.names = FALSE)
+
+num_df <- data.frame(column_name = num_feat)
+write.csv(num_df,
+          "../Stat_Outputs/num_feat.csv",
+          row.names = FALSE)
+
+```
