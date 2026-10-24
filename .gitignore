@@ -24,3 +24,10 @@ __pycache__/
 .Rhistory
 .RData
 .Rproj.user/
+.gitnexus
+
+# Local docs (download from nemsis.org) and agent files
+Documentations/
+CLAUDE.md
+AGENTS.md
+Scripts/.RDataTmp

@@ -487,7 +487,7 @@ NEMSIS_2024_Counterfactuals/
 │   ├── out_tvt_macro_f1/                  # Stage 5 TVT results (macro F1 + delta — shared dir)
 │   ├── out_oof_macro_f1_universal_split/  # Stage 5 OOF macro F1 results
 │   └── out_oof_delta_macro_f1/            # Stage 5 OOF delta results
-├── Documentations/                     # NEMSIS data dictionaries and reference PDFs
+├── Documentations/                     # (local only, not tracked) NEMSIS data dictionary and user manual: download from nemsis.org
 └── Scripts/
     ├── ascii64_to_parquet_batch_processing.py   # Stage 1
     ├── DB_Creation_from_parquet.ipynb           # Stage 2
@@ -543,3 +543,11 @@ install.packages(readLines("requirements_r.txt") |> sub("==.*", "", x = _))
 
 - NEMSIS Technical Assistance Center. *National EMS Information System 2024 Public-Release Research Dataset.* [https://nemsis.org](https://nemsis.org)
 - NEMSIS Data Dictionary v3.5.0
+
+---
+
+## Data Source and Credit
+
+National Highway Traffic Safety Administration, National Emergency Medical Services Information System. The content reproduced from the NEMSIS Database remains the property of the National Highway Traffic Safety Administration. The National Highway Traffic Safety Administration is not responsible for any claims arising from works based on the original Data, Text, Tables, or Figures.
+
+This repository contains code and aggregate results only. It does not include NEMSIS data. The NEMSIS data dictionary and user manual are available from [nemsis.org](https://nemsis.org); download the Public-Release Research Dataset from there under its terms of use.
